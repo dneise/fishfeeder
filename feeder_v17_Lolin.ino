@@ -371,7 +371,7 @@ void loop() {
     if ((currentMillisLED - previousMillisLED > intervalLED)&& activated == true) {
         previousMillisLED = currentMillisLED;
         digitalWrite(LED_white, LOW);
-        digitalWrite(onoffpin, LOW);
+        digitalWrite(tippingServoOnOffPin, LOW);
         activated = false;
     }
 
