@@ -8,21 +8,25 @@
 #include <NTPClient.h>                              // include NTPClient library
 #include <time.h>                                   // time() ctime()
 
-// Define NTP properties
-#define NTP_ADDRESS  "de.pool.ntp.org"              // change this to whatever pool is closest (see ntp.org)
-#define MY_TZ "CET-1CEST,M3.5.0/02,M10.5.0/03"      //Timezone
-time_t now;                                         // this is the epoch
-tm tm;                                              // the structure tm holds time information in a more convient way
-String t = "";
-
 #define dirPin 33
 #define stepPin 32
+#define stepperEnablePin 25
+// MS1 .. MS3 are also stepper pins TODO: explain
+// this defined stepper resolution (how many degrees per step)
+const int MS1 = 14;
+const int MS2 = 13;
+const int MS3 = 12;
+
+
 #define motorInterfaceType 1
-#define SERVO_PIN 26 // ESP32 pin GIOP26 connected to servo motor
+
+#define tippingServoControlPin 26 // ESP32 pin GIOP26 connected to servo motor
+#define tippingServoOnOffPin 16  //servo on off pin
+
 String temp = "";  //temporär
 String packet = "";
 String received = "";
-#define onoffpin 16  //servo on off pin
+
 Servo servoMotor;
 
 //WIFI
@@ -32,9 +36,6 @@ const char* deviceName = "secret_device_name";
 
 String command;
 
-const int MS1 = 14;
-const int MS2 = 13;
-const int MS3 = 12;
 int MOTOR_STEPS = 200;
 
 // Create a new instance of the AccelStepper class:
@@ -42,20 +43,23 @@ AccelStepper stepper = AccelStepper(motorInterfaceType, stepPin, dirPin);
 
 const int buttonPin = 4;     // the number of the pushbutton pin
 int buttonState = 0;         // variable for reading the pushbutton status
-#define LED1  18
+#define LED1  18  // this is a blue LED
 #define LED2  5
-#define LED3  23  //white
-const int sensorPin = 35;  //photoelectric pin
+// this white LED illuminates the bucket LDR (under bucketPositionSensorPin) to sense the position
+#define LED_white  23
+const int nullPositionPhotoElectricPin = 35;
+#define bucketPositionSensorPin A0
 int LDRValue;  //LDR Value
 int lightInit;  // initial value
 int lightVal;   // light reading
+
 bool nulled = false;
 bool executed = false;
 bool going = false;
 bool activated = true;
 
-unsigned long previousMillisLED = 0;                // will store last time LED3 was updated
-unsigned long intervalLED = 45000;                   // interval at which to switch off LED3 (milliseconds)
+unsigned long previousMillisLED = 0;                // will store last time LED_white was updated
+unsigned long intervalLED = 45000;                   // interval at which to switch off LED_white (milliseconds)
 
 
 const int g1 = 280;
@@ -115,437 +119,326 @@ int LED1State = LOW;
 
 
 WiFiClient espClient;
-PubSubClient client(espClient);
+PubSubClient mqtt_client(espClient);
 
-
-void nullposition() {
-  //digitalWrite(LED3, HIGH); // 04062022
-  stepper.enableOutputs();
-  LDRValue = analogRead(A0); // read analog input pin 0
-  lightVal = analogRead(sensorPin);
-  Serial.println("check fork light barrier");
-  Serial.println(lightVal);
-  stepper.setMaxSpeed(200);
-  if (executed == false && lightVal > 700) {
-    stepper.runToNewPosition(-100);
-    Serial.println("detection positive --> repositioning");
-    executed = true;
-  //  delay(2000);
-  }
-
-
- lightVal = analogRead(sensorPin);
- LDRValue = analogRead(A0); // read analog input pin 0
-  stepper.moveTo(4000);
-  while (lightVal < 700 && nulled != true && LDRValue > 3000) {// Full speed up to 300
-    stepper.run();
-    lightVal = analogRead(sensorPin); // read the current light levels
-LDRValue = analogRead(A0); // read analog input pin 0
-  }
-
-  stepper.stop(); // Stop as fast as possible: sets new target
-  stepper.runToPosition();
-  stepper.setCurrentPosition(0);  //set steppercounter to 0 aufter reaching endstop switch
-  if (LDRValue > 3000) {
-    Serial.println(LDRValue); // prints the value read
-      Serial.println("moved on to null position"); // prints the value read
-  nulled = true;
-
-    Serial.println("null position set");
-  Serial.println(stepper.currentPosition());
-  }
-  stepper.setMaxSpeed(200);
-  stepper.disableOutputs();
-LDRValue = analogRead(A0); // read analog input pin 0
-  if (LDRValue < 3000) {
-   Serial.println("light barrier interrupted");
-  Serial.println(LDRValue); // prints the value read
-  Serial.println("move to empty position again");
-  moveemptyposition();
-  stepper.moveTo(4000);
-  }
-
-  // delay(10);
+void network_led_on() {
+    digitalWrite(LED1, LOW);
 }
-
+void network_led_off() {
+    digitalWrite(LED1, HIGH);
+}
 
 void setup() {
-  Serial.begin(115200);
-  servoMotor.attach(SERVO_PIN);  // attaches the servo on ESP32 pin
-  lightInit = analogRead(sensorPin);
-  Serial.println(lightInit);
-  pinMode(onoffpin, OUTPUT);
-  digitalWrite(onoffpin, LOW);
-  pinMode(buttonPin, INPUT); //initialize the pushbutton pin as an input
-  pinMode(LED1, OUTPUT);
-  pinMode(LED2, OUTPUT);
-  pinMode(LED3, OUTPUT);
-  digitalWrite(LED1, LOW);
-  digitalWrite(LED2, LOW);
-  digitalWrite(LED3, HIGH);
-  stepper.setPinsInverted(false, false, true);
-  stepper.setEnablePin(25);
-  pinMode(MS1, OUTPUT);
-  pinMode(MS2, OUTPUT);
-  pinMode(MS3, OUTPUT);
-  digitalWrite(MS1, HIGH);
-  digitalWrite(MS2, HIGH);
-  digitalWrite(MS3, HIGH);
+    Serial.begin(115200);
+    servoMotor.attach(tippingServoControlPin);
+    lightInit = analogRead(nullPositionPhotoElectricPin);
+    Serial.println(lightInit);
 
-  setup_wifi();
-  client.setServer(mqtt_server, mqttPort);
-  client.setCallback(callback);
-  reconnect();
-  configTzTime(MY_TZ, NTP_ADDRESS);
-  ntp();
-  // Set the maximum speed and acceleration:
-  stepper.setMaxSpeed(200);   //(1000)
-  stepper.setAcceleration(800);  //(1000)
-  nullposition();
+    pinMode(tippingServoOnOffPin, OUTPUT);
+    digitalWrite(tippingServoOnOffPin, LOW);
 
+    pinMode(buttonPin, INPUT);
+    pinMode(LED1, OUTPUT);
+    pinMode(LED2, OUTPUT);
+    pinMode(LED_white, OUTPUT);
+
+    digitalWrite(LED1, LOW);
+    digitalWrite(LED2, LOW);
+    digitalWrite(LED_white, HIGH);
+
+    stepper.setPinsInverted(false, false, true);
+    stepper.setEnablePin(stepperEnablePin);
+    pinMode(MS1, OUTPUT);
+    pinMode(MS2, OUTPUT);
+    pinMode(MS3, OUTPUT);
+    digitalWrite(MS1, HIGH);
+    digitalWrite(MS2, HIGH);
+    digitalWrite(MS3, HIGH);
+
+    wait_until_wifi_is_connected();
+    mqtt_client.setServer(mqtt_server, mqttPort);
+    mqtt_client.setCallback(callback);
+    reconnect_mqtt();
+
+    stepper.setMaxSpeed(200);
+    stepper.setAcceleration(800);
+    nullposition();
 }
 
+void wait_until_wifi_is_connected() {
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.println("Connecting to WiFi..");
+    }
+    Serial.println("Connected to the WiFi network");
+}
+
+void reconnect_mqtt() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected!");
+        wait_until_wifi_is_connected();
+    }
+
+    // Loop until we're reconnected
+    while (!mqtt_client.connected()) {
+        Serial.print("Attempting MQTT connection...");
+
+        // ---------- TODO -------- this seems static, why not use static string?
+        char clientid[25];
+        snprintf(clientid, 25, "WIFI-Display-%08X", "12345"); //this adds the mac address to the mqtt_client for a unique id
+        Serial.print("Client ID: ");
+        Serial.println(clientid);
+        // ------------------------------
+
+        if (mqtt_client.connect(clientid)) {
+            Serial.println("connected");
+            mqtt_client.subscribe("aqua/feeder");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqtt_client.state());
+            Serial.println(" try again in 1 seconds"); // TODO use same constant here and below.
+            delay(1000);
+        }
+    }
+}
+
+bool is_fork_light_barrier_blocked(){
+    lightVal = analogRead(nullPositionPhotoElectricPin);
+    if (lightVal > 700){
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool is_bucket_up(){
+    LDRValue = analogRead(bucketPositionSensorPin);
+    if (LDRValue > 3000) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void nullposition() {
+    stepper.enableOutputs();
+    Serial.print("check fork light barrier. Value: ");
+    Serial.println(lightVal);
+
+    stepper.setMaxSpeed(200);
+    if (executed == false && is_fork_light_barrier_blocked()) {
+        stepper.runToNewPosition(-100);  // move backward, from current position
+        Serial.println("detection positive --> repositioning");
+        executed = true;
+    }
+
+    stepper.moveTo(4000); // move forward from current position
+    while (!is_fork_light_barrier_blocked() && nulled != true && is_bucket_up()) {
+        stepper.run();
+    }
+
+    stepper.stop();
+    stepper.runToPosition();  // TODO: find out what this does?
+    stepper.setCurrentPosition(0);  //set internal stepper counter to 0
+
+    if (is_bucket_up()) {
+        Serial.println("moved on to null position");
+        nulled = true;
+        Serial.println("null position set");
+        Serial.println(stepper.currentPosition());
+    }
+
+    stepper.disableOutputs();
+
+    if (!is_bucket_up()) {
+        Serial.println("light barrier interrupted");
+        Serial.println("bringing bucket up again");
+        bring_bucket_into_upright_position();
+    }
+}
+
+void bring_bucket_into_upright_position() {
+    delay(500);  // TODO do we really need this?  maybe this is better closer to the stop of the stepper
+    stepper.enableOutputs();
+    stepper.setMaxSpeed(200);
+    stepper.setAcceleration(800);
+    int CONTROL_POSITION = stepper.currentPosition() - 350;
+    stepper.moveTo(CONTROL_POSITION);
+    while (stepper.currentPosition() != CONTROL_POSITION) {
+        stepper.run();
+    }
+    nulled = false;
+    nullposition();
+}
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  String sTopic = String(topic);
-  Serial.print("topic empfangen: ");
-  Serial.println(String(topic));
+    String sTopic = String(topic);
+    Serial.print("topic empfangen: ");
+    Serial.println(String(topic));
 
+    if (sTopic == "aqua/feeder") {
+        activated = true;
+        digitalWrite(LED_white, HIGH);
+        temp = "";
 
-  if (sTopic == "aqua/feeder") {
-activated = true;
- digitalWrite(LED3, HIGH);
-    temp = "";
+        for (int i = 0; i < length; i++) {
+            temp += ((char)payload[i]);
+        }
 
-    for (int i = 0; i < length; i++) {
-      temp += ((char)payload[i]);
+        received = temp;
+        Serial.println(received);
+        move_to_position_according_to_command();
     }
-    received = temp;
-    Serial.println(received);
-    moveposition();
-  }
-
-
 }
 
-void setup_wifi() {
+void move_to_position_according_to_command() {
 
-
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.println("Connecting to WiFi..");
-  }
-
-  Serial.println("Connected to the WiFi network");
-}
-void reconnect() {
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected!");
-    void setup_wifi();
-  }
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    char clientid[25];
-    snprintf(clientid, 25, "WIFI-Display-%08X", "12345"); //this adds the mac address to the client for a unique id
-    Serial.print("Client ID: ");
-    Serial.println(clientid);
-    if (client.connect(clientid)) {
-      Serial.println("connected");
-
-
-      client.subscribe("aqua/feeder");
-
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 1 second before retrying
-      delay(1000);
+    if (received == "blue") {
+        MOTOR_STEPS = MotorStepblue[counterblue++];
+        sprintf ( buffer, "Counter: %d \t MotoStepValues blue: %d", counterblue, MOTOR_STEPS);
+        Serial.println(buffer);
+        if (counterblue == 5) {
+            counterblue = 0;
+        }
     }
-  }
-}
-void moveposition() {
-
-  if (received == "blue") {
-    if ( counterblue < 5 ) {
-      MOTOR_STEPS = MotorStepblue[counterblue++];
-      sprintf ( buffer, "Counter: %d \t MotoStepValues blue: %d", counterblue, MOTOR_STEPS);
-      Serial.println(buffer);
-if (counterblue == 5) {
-  counterblue = 0;
-}
+    if (received == "yellow") {
+        MOTOR_STEPS = MotorStepyellow[counteryellow++];
+        sprintf ( buffer, "Counter: %d \t MotoStepValues yellow: %d", counteryellow, MOTOR_STEPS);
+        Serial.println(buffer);
+        if (counteryellow == 5) {
+            counteryellow = 0;
+        }
     }
-    else {
-      Serial.println("bullshit");
+    if (received == "black") {
+        MOTOR_STEPS = MotorStepblack[counterblack++];
+        sprintf ( buffer, "Counter: %d \t MotoStepValues black: %d", counterblack, MOTOR_STEPS);
+        Serial.println(buffer);
+        if (counterblack == 5) {
+            counterblack = 0;
+        }
     }
-  }
-
-
-  if (received == "yellow") {
-
-    MOTOR_STEPS = MotorStepyellow[counteryellow++];
-    sprintf ( buffer, "Counter: %d \t MotoStepValues yellow: %d", counteryellow, MOTOR_STEPS);
-    Serial.println(buffer);
-if (counteryellow == 5) {
-  counteryellow = 0;
-}
-  }
-  if (received == "black") {
-
-    MOTOR_STEPS = MotorStepblack[counterblack++];
-    sprintf ( buffer, "Counter: %d \t MotoStepValues black: %d", counterblack, MOTOR_STEPS);
-    Serial.println(buffer);
-if (counterblack == 5) {
-  counterblack = 0;
-}
-  }
-  if (received != "black" && received != "yellow" && received != "blue" ) {
-    // nulled = false;
-    MOTOR_STEPS = 0;
-  }
-  nulled = false;
-  executed = false;
-  nullposition();
-  executed = true;
-
-  stepper.enableOutputs();
-  stepper.setMaxSpeed(200);   //(1000)
-  stepper.setAcceleration(800);  //(1000)
-  //MOTOR_STEPS = command.toInt();
-
-  if (nulled == true) {
-    Serial.println("fahren");
-    stepper.moveTo(MOTOR_STEPS);
-    while (stepper.currentPosition() != MOTOR_STEPS) {
-      stepper.run();
-      //Serial.println(stepper.currentPosition());
+    if (received != "black" && received != "yellow" && received != "blue" ) {
+        MOTOR_STEPS = 0;
     }
-    nulled = false;
-
-    //stepper.disableOutputs();
-  }
- if (received == "black" || received == "yellow" || received == "blue" ) {
-  empty();
- }
- else {
     nulled = false;
     executed = false;
-  nullposition();
- }
+    nullposition();
+    executed = true;
+
+    stepper.enableOutputs();
+    stepper.setMaxSpeed(200);
+    stepper.setAcceleration(800);
+
+    if (nulled == true) {
+        Serial.println("fahren");
+        stepper.moveTo(MOTOR_STEPS);
+        while (stepper.currentPosition() != MOTOR_STEPS) {
+            stepper.run();
+        }
+        nulled = false;
+    }
+    if (received == "black" || received == "yellow" || received == "blue" ) {
+        empty_bucket();
+    } else {
+        nulled = false;
+        executed = false;
+        nullposition();
+    }
 }
 
-void empty()
+void empty_bucket()
 {
-  digitalWrite(onoffpin, HIGH);
-  // rotates from 110 degrees to 0 degrees
-  /* for (int pos = 110; pos >= 0; pos -= 1) {
-    servoMotor.write(pos);
-    delay(20); // waits 15ms to reach the position - last value 20
-  }
-  for (int pos = 0; pos <= 110; pos += 1) {
-    // in steps of 10 degree
-    servoMotor.write(pos);
-    delay(20); // waits 15ms to reach the position - last value 20
-  }
-  */
-  for (int pos = 110; pos >= -50; pos -= 1) {
-    servoMotor.write(pos);
-    delay(1); // waits 15ms to reach the position - last value 20
-  }
-
-  for (int pos = -50; pos <= 110; pos += 1) {
-    // in steps of 10 degree
-    servoMotor.write(pos);
-    delay(5); // waits 15ms to reach the position - last value 20
-  }
-
-   for (int pos = 110; pos >= -50; pos -= 1) {
-    servoMotor.write(pos);
-    delay(1); // waits 15ms to reach the position - last value 20
-  }
-
-  for (int pos = -50; pos <= 110; pos += 1) {
-    // in steps of 10 degree
-    servoMotor.write(pos);
-    delay(5); // waits 15ms to reach the position - last value 20
-  }
-
-   for (int pos = 110; pos >= -50; pos -= 1) {
-    servoMotor.write(pos);
-    delay(3); // waits 15ms to reach the position - last value 20
-  }
-
-  for (int pos = -50; pos <= 110; pos += 1) {
-    // in steps of 10 degree
-    servoMotor.write(pos);
-    delay(5); // waits 15ms to reach the position - last value 20
-  }
-  //delay(5000);
-
-  moveemptyposition();
+    digitalWrite(tippingServoOnOffPin, HIGH);
+    for (int iteration = 0; iteration < 3; iteration ++){
+        for (int pos = 110; pos >= -50; pos -= 1) {
+            servoMotor.write(pos);
+            delay(1);
+        }
+        for (int pos = -50; pos <= 110; pos += 1) {
+            servoMotor.write(pos);
+            delay(5);
+        }
+    }
+    digitalWrite(tippingServoOnOffPin, LOW);
+    bring_bucket_into_upright_position();
 }
 
-void moveemptyposition() {
-   delay(500);
-  stepper.enableOutputs();
-  stepper.setMaxSpeed(200);   //(1000)
-  stepper.setAcceleration(800);  //(1000)
-  MOTOR_STEPS = stepper.currentPosition() - 350;
-  stepper.moveTo(MOTOR_STEPS);
-  while (stepper.currentPosition() != MOTOR_STEPS) {
-    stepper.run();
-   // Serial.println(stepper.currentPosition());
-
-  }
-  nulled = false;
-  nullposition();
-}
 
 void loop() {
-
     unsigned long currentMillisLED = millis();
 
-  if ((currentMillisLED - previousMillisLED > intervalLED)&& activated == true) {
-    // save the last time you blinked the LED
-    previousMillisLED = currentMillisLED;
-  digitalWrite(LED3, LOW);
-  digitalWrite(onoffpin, LOW);
-  activated = false;
+    if ((currentMillisLED - previousMillisLED > intervalLED)&& activated == true) {
+        previousMillisLED = currentMillisLED;
+        digitalWrite(LED_white, LOW);
+        digitalWrite(onoffpin, LOW);
+        activated = false;
     }
 
-  buttonState = digitalRead(buttonPin);
-  if (Serial.available()) {
 
-    command = Serial.readStringUntil('\n');
-    command.trim();
-    Serial.print("you have typed: ");
-    Serial.println(command);
-    if (command.equals("99")) {
-      //Serial.println("go to null position");
-      nulled = false;
-      nullposition();
-
-    }
-    else if (command.equals("999")) {
-      empty();
-    }
-    else  {
-      moveposition();
+    if (Serial.available()) {
+        command = Serial.readStringUntil('\n');
+        command.trim();
+        Serial.print("you have typed: ");
+        Serial.println(command);
+        if (command.equals("null")) {
+            nulled = false;
+            nullposition();
+        } else if (command.equals("empty")) {
+            empty_bucket();
+        } else {
+            move_to_position_according_to_command();
+        }
     }
 
-  }
+    if (WiFi.status() == WL_CONNECTED) {                            //blink blue LED1 while wifi is connected
+        unsigned long currentMillisLED1 = millis();
 
-  if (WiFi.status() == WL_CONNECTED) {                            //blink blue LED1 while wifi is connected
-
-    unsigned long currentMillisLED1 = millis();
-
-    if (currentMillisLED1 - previousMillisLED1 > intervalLED1) {
-      // save the last time you blinked the LED1
-      previousMillisLED1 = currentMillisLED1;
-      LED1State = !LED1State;
-      // if the LED1 is off turn it on and vice-versa:
-      if (LED1State == HIGH) {
-        digitalWrite(LED1, LOW);
-        intervalLED1 = 3000;
-      } else {
-        digitalWrite(LED1, HIGH);
-        intervalLED1 = 100;
-      }
+        if (currentMillisLED1 - previousMillisLED1 > intervalLED1) {
+            // save the last time you blinked the LED1
+            previousMillisLED1 = currentMillisLED1;
+            LED1State = !LED1State;
+            // if the LED1 is off turn it on and vice-versa:
+            if (LED1State == HIGH) {
+                digitalWrite(LED1, LOW);
+                intervalLED1 = 3000;
+            } else {
+                digitalWrite(LED1, HIGH);
+                intervalLED1 = 100;
+            }
+        }
     }
-  }
 
-  if (buttonState == HIGH) {
-
-counterblack = 0;
-counterblue = 0;
-counteryellow = 0;
-
-    digitalWrite(LED2, HIGH);
-
-  }
-  else {
-    digitalWrite(LED2, LOW);
-
-  }
-
-
-  reconnect();
-
-
+    buttonState = digitalRead(buttonPin);
+    if (buttonState == HIGH) {
+        counterblack = 0;
+        counterblue = 0;
+        counteryellow = 0;
+        digitalWrite(LED2, HIGH);
+    } else {
+        digitalWrite(LED2, LOW);
+    }
+    reconnect_mqtt();
 
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= interval) {
+        Serial.print("counteryellow jetzt: ");
+        Serial.println(counteryellow);
+        Serial.print("counterblack jetzt: ");
+        Serial.println(counterblack);
+        Serial.print("counterblue jetzt: ");
+        Serial.println(counterblue);
+        Serial.println("publish werte zu smartphone");
 
-      Serial.print("counteryellow jetzt: ");
-      Serial.println(counteryellow);
-      Serial.print("counterblack jetzt: ");
-      Serial.println(counterblack);
-      Serial.print("counterblue jetzt: ");
-      Serial.println(counterblue);
-      Serial.println("publish werte zu smartphone");
-
-      lightVal = analogRead(sensorPin);
+        lightVal = analogRead(nullPositionPhotoElectricPin);
         Serial.println("check fork light barrier in loop");
-  Serial.println(lightVal);
-ntp();
-//Preparing for mqtt send
+        Serial.println(lightVal);
 
-    counteryellow_str = String(counteryellow); //converting ftemp (the float variable above) to a string
-    counteryellow_str.toCharArray(yellow, counteryellow_str.length() + 1); //packaging up the data to publish to mqtt whoa...
+        mqtt_client.publish("aqua/feeder/counteryellow", String(counteryellow).c_str());
+        mqtt_client.publish("aqua/feeder/counterblack", String(counterblack).c_str());
+        mqtt_client.publish("aqua/feeder/counterblue", String(counterblue).c_str());
 
-    counterblack_str = String(counterblack); //converting Humidity (the float variable above) to a string
-    counterblack_str.toCharArray(black, counterblack_str.length() + 1); //packaging up the data to publish to mqtt whoa...
-
-    counterblue_str = String(counterblue); //converting Humidity (the float variable above) to a string
-    counterblue_str.toCharArray(blue, counterblue_str.length() + 1); //packaging up the data to publish to mqtt whoa...
-
-      client.publish("aqua/feeder/counteryellow", yellow);
-      client.publish("aqua/feeder/counterblack", black);
-      client.publish("aqua/feeder/counterblue", blue);
-     // client.publish("aqua/feeder/zeit", t.c_str());
-
-     previousMillis = currentMillis;
+        previousMillis = currentMillis;
     }
-
-
-  client.loop();
-
-}
-
-
-void ntp()
-{
-  //Seperate the components of the time/date for using it to trigger the event of setzero()".
-  //>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-  time(&now);                               // read the current time
-  localtime_r(&now, &tm);                   // update the structure tm with the current time
- /* Serial.print("year:");
-  Serial.print(tm.tm_year + 1900);          // years since 1900
-  Serial.print("\tmonth:");
-  Serial.print(tm.tm_mon + 1);              // January = 0 (!)
-  Serial.print("\tday:");
-  Serial.print(tm.tm_mday);                 // day of month
-  Serial.print("\thour:");
-  Serial.print(tm.tm_hour);                 // hours since midnight  0-23
-  Serial.print("\tmin:");
-  Serial.print(tm.tm_min);                  // minutes after the hour  0-59
-  Serial.print("\tsec:");
-  Serial.print(tm.tm_sec);                  // seconds after the minute  0-61*
-  Serial.print("\twday");
-  Serial.println(tm.tm_wday);               // days since Sunday 0-6
-*/
-  //  date = String(tm.tm_mday) + "." + String(tm.tm_mon + 1) + "." + String(tm.tm_year + 1900);
-  // savedate = String(tm.tm_mon + 1) + String(tm.tm_year + 1900) + ".csv";
-  t = String(tm.tm_hour) + ":" + String(tm.tm_min) + ":" + String(tm.tm_sec);
-
-  if (tm.tm_isdst == 1)                     // Daylight Saving Time flag
-    Serial.print("\tDST");
-  else
-    Serial.print("\tstandard");
-  Serial.println();
-
+    mqtt_client.loop();
 }
