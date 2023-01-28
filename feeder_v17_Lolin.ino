@@ -48,7 +48,6 @@ int buttonState = 0;         // variable for reading the pushbutton status
 #define LED_white  23
 const int nullPositionPhotoElectricPin = 35;
 #define bucketPositionSensorPin A0
-int LDRValue;  //LDR Value
 int lightInit;  // initial value
 int lightVal;   // light reading
 
@@ -210,7 +209,7 @@ bool is_fork_light_barrier_blocked(){
 }
 
 bool is_bucket_up(){
-    LDRValue = analogRead(bucketPositionSensorPin);
+    int LDRValue = analogRead(bucketPositionSensorPin);
     if (LDRValue > 3000) {
         return true;
     } else {
