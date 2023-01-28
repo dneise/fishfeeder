@@ -1,12 +1,17 @@
 //letzte Änderung:  if (executed == false && lightVal > 500) von 300 auf 500 gesetzt, da es immer schon bei 400 war. scheint aber wohl netzteil abhängig zu sein.
 //letzte Änderung 15.06.22:  Servo beschleunigt
 #include <AccelStepper.h>
-#include <Servo.h>
 #include "WiFi.h"
 #include <PubSubClient.h>
 #include <WiFiUdp.h>
-#include <NTPClient.h>                              // include NTPClient library
-#include <time.h>                                   // time() ctime()
+#include <fishfeeder_servo.h>
+
+// parameters for bucket tipping servo
+const int tippingServoControlPin=26;
+const int tippingServoOnOffPin=16;
+const int servo_num_iterations=3;
+const int servo_start_pos=110;
+const int servo_end_pos=-50;
 
 #define dirPin 33
 #define stepPin 32
@@ -17,17 +22,11 @@ const int MS1 = 14;
 const int MS2 = 13;
 const int MS3 = 12;
 
-
 #define motorInterfaceType 1
-
-#define tippingServoControlPin 26 // ESP32 pin GIOP26 connected to servo motor
-#define tippingServoOnOffPin 16  //servo on off pin
 
 String temp = "";  //temporär
 String packet = "";
 String received = "";
-
-Servo servoMotor;
 
 //WIFI
 const char *ssid     = "secret_ssid";                                //your Wifi SSID
@@ -60,7 +59,6 @@ bool activated = true;
 
 unsigned long previousMillisLED = 0;                // will store last time LED_white was updated
 unsigned long intervalLED = 45000;                   // interval at which to switch off LED_white (milliseconds)
-
 
 const int g1 = 280;
 const int g2 = 175;
@@ -130,12 +128,11 @@ void network_led_off() {
 
 void setup() {
     Serial.begin(115200);
-    servoMotor.attach(tippingServoControlPin);
+
+    servo_setup(tippingServoOnOffPin, tippingServoControlPin);
+
     lightInit = analogRead(nullPositionPhotoElectricPin);
     Serial.println(lightInit);
-
-    pinMode(tippingServoOnOffPin, OUTPUT);
-    digitalWrite(tippingServoOnOffPin, LOW);
 
     pinMode(buttonPin, INPUT);
     pinMode(LED1, OUTPUT);
@@ -339,7 +336,8 @@ void move_to_position_according_to_command() {
         nulled = false;
     }
     if (received == "black" || received == "yellow" || received == "blue" ) {
-        empty_bucket();
+        servo_empty_bucket(servo_num_iterations, servo_start_pos, servo_end_pos);
+        bring_bucket_into_upright_position();
     } else {
         nulled = false;
         executed = false;
@@ -347,34 +345,13 @@ void move_to_position_according_to_command() {
     }
 }
 
-void empty_bucket()
-{
-    digitalWrite(tippingServoOnOffPin, HIGH);
-    for (int iteration = 0; iteration < 3; iteration ++){
-        for (int pos = 110; pos >= -50; pos -= 1) {
-            servoMotor.write(pos);
-            delay(1);
-        }
-        for (int pos = -50; pos <= 110; pos += 1) {
-            servoMotor.write(pos);
-            delay(5);
-        }
-    }
-    digitalWrite(tippingServoOnOffPin, LOW);
-    bring_bucket_into_upright_position();
-}
-
-
 void loop() {
     unsigned long currentMillisLED = millis();
-
     if ((currentMillisLED - previousMillisLED > intervalLED)&& activated == true) {
         previousMillisLED = currentMillisLED;
         digitalWrite(LED_white, LOW);
-        digitalWrite(tippingServoOnOffPin, LOW);
         activated = false;
     }
-
 
     if (Serial.available()) {
         command = Serial.readStringUntil('\n');
@@ -385,7 +362,8 @@ void loop() {
             nulled = false;
             nullposition();
         } else if (command.equals("empty")) {
-            empty_bucket();
+            servo_empty_bucket(servo_num_iterations, servo_start_pos, servo_end_pos);
+            bring_bucket_into_upright_position();
         } else {
             move_to_position_according_to_command();
         }
