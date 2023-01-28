@@ -5,6 +5,7 @@
 #include <PubSubClient.h>
 #include <WiFiUdp.h>
 #include <fishfeeder_servo.h>
+#include <fishfeeder_bucket_postion_sensor.h>
 
 // parameters for bucket tipping servo
 const int tippingServoControlPin=26;
@@ -12,6 +13,11 @@ const int tippingServoOnOffPin=16;
 const int servo_num_iterations=3;
 const int servo_start_pos=110;
 const int servo_end_pos=-50;
+
+// parameters for bucket position sensor
+const int white_LED_pin=23;
+const int bucket_position_light_sensor_pin=A0;
+const int bucket_LDR_sensor_limit=3000;
 
 #define dirPin 33
 #define stepPin 32
@@ -44,8 +50,7 @@ const int buttonPin = 4;     // the number of the pushbutton pin
 int buttonState = 0;         // variable for reading the pushbutton status
 #define LED1  18  // this is a blue LED
 #define LED2  5
-// this white LED illuminates the bucket LDR (under bucketPositionSensorPin) to sense the position
-#define LED_white  23
+
 const int nullPositionPhotoElectricPin = 35;
 #define bucketPositionSensorPin A0
 int lightInit;  // initial value
@@ -129,6 +134,7 @@ void setup() {
     Serial.begin(115200);
 
     servo_setup(tippingServoOnOffPin, tippingServoControlPin);
+    bucket_position_sensor_setup(white_LED_pin, bucket_position_light_sensor_pin, bucket_LDR_sensor_limit);
 
     lightInit = analogRead(nullPositionPhotoElectricPin);
     Serial.println(lightInit);
@@ -136,11 +142,9 @@ void setup() {
     pinMode(buttonPin, INPUT);
     pinMode(LED1, OUTPUT);
     pinMode(LED2, OUTPUT);
-    pinMode(LED_white, OUTPUT);
 
     digitalWrite(LED1, LOW);
     digitalWrite(LED2, LOW);
-    digitalWrite(LED_white, HIGH);
 
     stepper.setPinsInverted(false, false, true);
     stepper.setEnablePin(stepperEnablePin);
@@ -208,14 +212,6 @@ bool is_fork_light_barrier_blocked(){
     }
 }
 
-bool is_bucket_up(){
-    int LDRValue = analogRead(bucketPositionSensorPin);
-    if (LDRValue > 3000) {
-        return true;
-    } else {
-        return false;
-    }
-}
 
 void nullposition() {
     stepper.enableOutputs();
@@ -275,7 +271,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
     if (sTopic == "aqua/feeder") {
         activated = true;
-        digitalWrite(LED_white, HIGH);
+        white_led_on(); // TODO find out white we have to switch on the white LED here?
         temp = "";
 
         for (int i = 0; i < length; i++) {
@@ -348,7 +344,7 @@ void loop() {
     unsigned long currentMillisLED = millis();
     if ((currentMillisLED - previousMillisLED > intervalLED)&& activated == true) {
         previousMillisLED = currentMillisLED;
-        digitalWrite(LED_white, LOW);
+        white_led_off();
         activated = false;
     }
 
